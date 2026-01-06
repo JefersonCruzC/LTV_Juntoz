@@ -1,5 +1,4 @@
 name: Generar Reporte LTV
-
 on:
   push:
     branches: [ main ] # Se activa cada vez que subes cambios a la rama principal
