@@ -2,7 +2,7 @@ name: Generar Reporte LTV
 
 on:
   push:
-    branches: [ main ] # Se ejecuta cada vez que subas cambios
+    branches: [ main ] # Se activa cada vez que subes cambios a la rama principal
 
 jobs:
   build:
@@ -20,13 +20,13 @@ jobs:
     - name: Instalar librerías
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install pandas openpyxl
 
     - name: Ejecutar Script de LTV
       run: python scripts/procesar_ltv.py
 
     - name: Guardar Reporte generado
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4 # Versión actualizada
       with:
         name: reporte-ltv-final
         path: reportes/resultado_ltv.csv
