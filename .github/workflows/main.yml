@@ -1,4 +1,4 @@
-name: Generar Reporte LTV Ejecutivo
+name: Generar Reporte LTV Senior
 
 on:
   push:
@@ -20,12 +20,12 @@ jobs:
     - name: Instalar librerías
       run: |
         python -m pip install --upgrade pip
-        pip install pandas openpyxl matplotlib seaborn fpdf2
+        pip install pandas openpyxl matplotlib seaborn fpdf
 
-    - name: Ejecutar Pipeline de Datos y PDF
+    - name: Ejecutar Pipeline de Datos y Reporte PDF
       run: python scripts/procesar_ltv.py
 
-    - name: Publicar Reporte PDF
+    - name: Cargar Reporte Final
       uses: actions/upload-artifact@v4
       with:
         name: LTV_Executive_Report
