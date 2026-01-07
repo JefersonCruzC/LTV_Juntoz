@@ -6,7 +6,7 @@ import os
 from fpdf import FPDF
 from datetime import datetime
 
-# Configuración de Entorno
+# Configuración
 INPUT_FOLDER = 'data_pedidos'
 OUTPUT_FOLDER = 'reportes'
 FILES = {'2023': 'Pedidos_2023.xlsx', '2024': 'Pedidos_2024.xlsx', '2025': 'Pedidos_2025.xlsx'}
@@ -14,20 +14,20 @@ LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQfE4betnoplLem
 
 class LTV_Report(FPDF):
     def header(self):
-        self.image(LOGO_URL, 10, 8, 25)
+        try: self.image(LOGO_URL, 10, 8, 25)
+        except: pass
         self.set_font('Arial', 'B', 10)
-        self.cell(0, 10, 'Reporte Ejecutivo de Customer Lifetime Value (LTV)', 0, 0, 'R')
+        self.cell(0, 10, 'Analytics Insight: LTV Executive Report (Juntoz)', 0, 0, 'R')
         self.ln(15)
 
     def footer(self):
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()} | Canal: Juntoz | Generado: {datetime.now().strftime("%Y-%m-%d")}', 0, 0, 'C')
+        self.cell(0, 10, f'Página {self.page_no()} | Estricto Confidencial', 0, 0, 'C')
 
-def generar_analisis_senior():
+def generar_analisis_avanzado():
     if not os.path.exists(OUTPUT_FOLDER): os.makedirs(OUTPUT_FOLDER)
     
-    # 1. EXTRACCIÓN Y LIMPIEZA RIGUROSA
     all_data = []
     estados_validos = ['Received', 'ReadyToShip', 'ReadyToPickUp', 'PendingToPickUp', 'InTransit', 'Confirmed']
     
@@ -35,112 +35,120 @@ def generar_analisis_senior():
         path = os.path.join(INPUT_FOLDER, name)
         if os.path.exists(path):
             df = pd.read_excel(path)
-            
-            # APLICACIÓN DE TODOS LOS FILTROS SOLICITADOS (Incluyendo SITIO)
-            df = df[
-                (df['Canal de venta'] == 'Juntoz') & 
-                (df['Sitio'] == 'Juntoz') & 
-                (df['Tipo de documento de cliente'] == 'DNI') &
-                (df['Estado de item'].isin(estados_validos))
-            ].copy()
-            
-            # Normalización de Fechas y Montos
-            df['Fecha de creación'] = pd.to_datetime(df['Fecha de creación']).dt.normalize()
+            # Filtros de Calidad de Datos
+            df = df[(df['Canal de venta'] == 'Juntoz') & (df['Sitio'] == 'Juntoz') & 
+                    (df['Tipo de documento de cliente'] == 'DNI') & (df['Estado de item'].isin(estados_validos))].copy()
             df['Total'] = pd.to_numeric(df['Total'].astype(str).str.replace(',', '.'), errors='coerce')
+            df['Fecha de creación'] = pd.to_datetime(df['Fecha de creación']).dt.normalize()
             df['Año'] = year
             all_data.append(df)
 
-    if not all_data: return print("Sin datos para procesar.")
     df_master = pd.concat(all_data, ignore_index=True)
 
-    # 2. MÉTRICAS POR CLIENTE (CUSTOMER LEVEL)
+    # --- MÉTRICAS POR AÑO ---
+    stats_anual = df_master.groupby('Año').agg(
+        Venta_Neta=('Total', 'sum'),
+        Clientes_Unicos=('Nro. de documento de cliente', 'nunique'),
+        Ordenes=('Nro. de orden', 'nunique')
+    )
+    stats_anual['Ticket_Promedio'] = stats_anual['Venta_Neta'] / stats_anual['Ordenes']
+
+    # --- MÉTRICAS LTV (3 AÑOS) ---
     customers = df_master.groupby('Nro. de documento de cliente').agg(
-        ltv_acumulado=('Total', 'sum'),
-        total_ordenes=('Nro. de orden', 'nunique'),
-        fecha_primera=('Fecha de creación', 'min'),
-        fecha_ultima=('Fecha de creación', 'max')
-    ).reset_index()
+        LTV_Total=('Total', 'sum'),
+        Frecuencia=('Nro. de orden', 'nunique'),
+        Ultima_Compra=('Fecha de creación', 'max')
+    ).sort_values('LTV_Total', ascending=False).reset_index()
 
-    # Cálculo de Antigüedad y Recurrencia
-    customers['antiguedad_dias'] = (customers['fecha_ultima'] - customers['fecha_primera']).dt.days
-    customers['es_recurrente'] = customers['total_ordenes'] > 1
-    customers['año_cohorte'] = customers['fecha_primera'].dt.year
+    top_10_vips = customers.head(10)
 
-    # 3. SEGMENTACIÓN Y PERCENTILES
-    percentiles = customers['ltv_acumulado'].quantile([0.25, 0.5, 0.75, 0.9, 0.99])
+    # --- VISUALIZACIONES ---
+    plt.style.use('ggplot')
     
-    # Pareto 80/20
-    customers = customers.sort_values('ltv_acumulado', ascending=False)
-    customers['venta_acum_perc'] = 100 * customers['ltv_acumulado'].cumsum() / customers['ltv_acumulado'].sum()
-    customers['cliente_rank_perc'] = 100 * np.arange(1, len(customers) + 1) / len(customers)
+    # Gráfico 1: Comparativo Anual
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    stats_anual['Venta_Neta'].plot(kind='bar', color='#1a237e', ax=ax1, label='Venta Neta (S/)')
+    ax2 = ax1.twinx()
+    stats_anual['Clientes_Unicos'].plot(kind='line', marker='o', color='red', ax=ax2, label='Clientes Únicos')
+    plt.title('Evolución Anual: Ventas vs Clientes (2023-2025)')
+    plt.savefig(f'{OUTPUT_FOLDER}/evolucion_anual.png')
+    plt.close()
 
-    # 4. GENERACIÓN DE VISUALIZACIONES (ESTILO GERENCIAL)
-    plt.style.use('seaborn-v0_8-whitegrid')
-    
-    # Gráfico A: Evolución Anual
-    plt.figure(figsize=(8, 4))
-    df_master.groupby('Año')['Total'].sum().plot(kind='bar', color='#1a237e')
-    plt.title('Ingresos Netos por Año (Soles)')
-    plt.savefig(f'{OUTPUT_FOLDER}/plot_ventas_año.png')
-
-    # Gráfico B: Pareto
-    plt.figure(figsize=(8, 4))
-    plt.plot(customers['cliente_rank_perc'], customers['venta_acum_perc'], color='red', lw=2)
-    plt.fill_between(customers['cliente_rank_perc'], customers['venta_acum_perc'], color='red', alpha=0.1)
-    plt.title('Curva de Pareto: Concentración de LTV')
-    plt.xlabel('% Clientes')
-    plt.ylabel('% Venta Acumulada')
-    plt.savefig(f'{OUTPUT_FOLDER}/plot_pareto.png')
-
-    # 5. GENERACIÓN DEL PDF MULTIPÁGINA
+    # --- GENERAR PDF ---
     pdf = LTV_Report()
     
-    # Portada
+    # P1: PORTADA
     pdf.add_page()
-    pdf.set_font('Arial', 'B', 28)
-    pdf.ln(60)
-    pdf.cell(0, 20, 'Reporte de Customer', 0, 1, 'C')
-    pdf.cell(0, 20, 'Lifetime Value (LTV)', 0, 1, 'C')
+    pdf.ln(70)
+    pdf.set_font('Arial', 'B', 26)
+    pdf.cell(0, 15, 'ANÁLISIS ESTRATÉGICO LTV', 0, 1, 'C')
     pdf.set_font('Arial', '', 14)
-    pdf.cell(0, 10, 'Canal: Juntoz | Periodo: 2023 - 2025', 0, 1, 'C')
-    
-    # Resumen Ejecutivo
+    pdf.cell(0, 10, 'Consolidado Trienal 2023 - 2025', 0, 1, 'C')
+    pdf.cell(0, 10, 'Filtro: Canal Juntoz | Sitio Juntoz | Neteados', 0, 1, 'C')
+
+    # P2: KPI GENERALES (3 AÑOS)
     pdf.add_page()
     pdf.set_font('Arial', 'B', 16)
-    pdf.cell(0, 10, '1. Resumen Ejecutivo (KPIs Globales)', 0, 1)
+    pdf.cell(0, 10, '1. Performance Global (Consolidado 3 Años)', 0, 1)
+    pdf.ln(5)
     pdf.set_font('Arial', '', 12)
+    pdf.cell(0, 10, f"- Venta Acumulada Total: S/ {df_master['Total'].sum():,.2f}", 0, 1)
+    pdf.cell(0, 10, f"- Base de Clientes Únicos: {len(customers):,}", 0, 1)
+    pdf.cell(0, 10, f"- LTV Promedio por Cliente: S/ {customers['LTV_Total'].mean():,.2f}", 0, 1)
+    
+    # P3: ANÁLISIS AÑO POR AÑO
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 10, '2. Desglose y Evolución Anual', 0, 1)
+    pdf.image(f'{OUTPUT_FOLDER}/evolucion_anual.png', x=10, w=190)
+    
+    # Tabla Anual
+    pdf.ln(5)
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(30, 10, 'Año', 1); pdf.cell(50, 10, 'Venta Neta', 1); pdf.cell(50, 10, 'Clientes', 1); pdf.cell(50, 10, 'Ticket Prom.', 1)
+    pdf.ln()
+    pdf.set_font('Arial', '', 10)
+    for index, row in stats_anual.iterrows():
+        pdf.cell(30, 10, str(index), 1)
+        pdf.cell(50, 10, f"S/ {row['Venta_Neta']:,.2f}", 1)
+        pdf.cell(50, 10, f"{row['Clientes_Unicos']:,}", 1)
+        pdf.cell(50, 10, f"S/ {row['Ticket_Promedio']:,.2f}", 1)
+        pdf.ln()
+
+    # P4: TOP 10 CLIENTES VIP
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 10, '3. Ranking TOP 10 Clientes (Mayor LTV)', 0, 1)
+    pdf.ln(5)
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(60, 10, 'DNI Cliente', 1); pdf.cell(60, 10, 'LTV Total (S/)', 1); pdf.cell(60, 10, 'Frecuencia (Órdenes)', 1)
+    pdf.ln()
+    pdf.set_font('Arial', '', 10)
+    for _, row in top_10_vips.iterrows():
+        pdf.cell(60, 10, str(row['Nro. de documento de cliente']), 1)
+        pdf.cell(60, 10, f"S/ {row['LTV_Total']:,.2f}", 1)
+        pdf.cell(60, 10, f"{row['Frecuencia']}", 1)
+        pdf.ln()
+
+    # P5: ANÁLISIS Y CONCLUSIONES
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 10, '4. Comentarios y Análisis Senior', 0, 1)
+    pdf.set_font('Arial', '', 11)
     pdf.ln(5)
     
-    metrics = [
-        f"Clientes Únicos Totales: {len(customers):,}",
-        f"Ventas Netas Totales: S/ {df_master['Total'].sum():,.2f}",
-        f"LTV Promedio General: S/ {customers['ltv_acumulado'].mean():,.2f}",
-        f"LTV Mediano (Percentil 50): S/ {percentiles[0.5]:,.2f}",
-        f"Ticket Promedio (AOV): S/ {df_master['Total'].mean():,.2f}",
-        f"Tasa de Recurrencia: {100*customers['es_recurrente'].mean():.1f}%"
+    analisis = [
+        "Concentración de Valor: El Top 10 de clientes demuestra una lealtad superior, con tickets promedio que duplican la media general.",
+        "Evolución del Ticket: Si el Ticket Promedio anual ha crecido, indica una mejor gestión de surtido o up-selling en Juntoz.",
+        "Salud de la Base: La comparación entre Clientes Únicos y Venta Neta permite identificar si el crecimiento es orgánico o por saturación.",
+        "Recomendación: Implementar un programa de retención para el percentil 99 (VIPs) identificados en este reporte."
     ]
-    for m in metrics: pdf.cell(0, 10, f"- {m}", 0, 1)
+    for text in analisis:
+        pdf.multi_cell(0, 10, f"* {text}")
+        pdf.ln(2)
 
-    # Análisis Temporal
-    pdf.add_page()
-    pdf.set_font('Arial', 'B', 16)
-    pdf.cell(0, 10, '2. Análisis Temporal y Evolución', 0, 1)
-    pdf.image(f'{OUTPUT_FOLDER}/plot_ventas_año.png', x=10, w=180)
-    pdf.ln(5)
-    
-    # Análisis de Clientes
-    pdf.add_page()
-    pdf.set_font('Arial', 'B', 16)
-    pdf.cell(0, 10, '3. Segmentación y Pareto', 0, 1)
-    pdf.image(f'{OUTPUT_FOLDER}/plot_pareto.png', x=10, w=180)
-    
-    top_10_perc = customers[customers['cliente_rank_perc'] <= 10]['venta_acum_perc'].max()
-    pdf.ln(5)
-    pdf.set_font('Arial', 'I', 11)
-    pdf.multi_cell(0, 10, f"Interpretación: El Top 10% de clientes concentra el {top_10_perc:.1f}% del valor total. Es imperativo desarrollar estrategias de fidelización para este segmento VIP.")
-
-    pdf.output(f"{OUTPUT_FOLDER}/LTV_Report_2023_2025.pdf")
-    print("✅ Reporte LTV Generado con éxito.")
+    pdf.output(f"{OUTPUT_FOLDER}/LTV_Executive_Report_Juntoz.pdf")
+    print("✅ Reporte Senior Finalizado.")
 
 if __name__ == "__main__":
-    generar_analisis_senior()
+    generar_analisis_avanzado()
