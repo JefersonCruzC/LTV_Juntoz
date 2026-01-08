@@ -13,7 +13,6 @@ FINAL_PDF_NAME = 'LTV_Executive_Report_Juntoz.pdf'
 FILES = {'2023': 'Pedidos_2023.xlsx', '2024': 'Pedidos_2024.xlsx', '2025': 'Pedidos_2025.xlsx'}
 LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQfE4betnoplLem-rHmrOt2gqS7zMBYV8D3aw&s"
 
-# Definimos solo las columnas que vamos a usar para no saturar la RAM
 COLS_TO_USE = [
     'Canal de venta', 'Sitio', 'Tipo de documento de cliente', 
     'Nro. de documento de cliente', 'Estado de item', 
@@ -68,56 +67,55 @@ def generar_analisis_gerencial():
     all_years_data = []
     estados_validos = ['Received', 'ReadyToShip', 'ReadyToPickUp', 'PendingToPickUp', 'InTransit', 'Confirmed']
 
-    print("--- Cargando y Filtrando Data (Optimizado) ---")
+    print("--- Cargando y Filtrando Data (Estrategia Senior) ---")
     for year, name in FILES.items():
         path = os.path.join(INPUT_FOLDER, name)
         if os.path.exists(path):
-            # Leemos solo lo necesario con el motor más rápido disponible
             df = pd.read_excel(path, engine='calamine', usecols=COLS_TO_USE)
-            
-            # Filtro inmediato: Canal, Sitio, DNI y Estados Neteados
-            df = df[
-                (df['Canal de venta'] == 'Juntoz') & 
-                (df['Sitio'] == 'Juntoz') & 
-                (df['Tipo de documento de cliente'] == 'DNI') & 
-                (df['Estado de item'].isin(estados_validos))
-            ].copy()
-            
-            # Limpieza de datos
+            df = df[(df['Canal de venta'] == 'Juntoz') & (df['Sitio'] == 'Juntoz') & 
+                    (df['Tipo de documento de cliente'] == 'DNI') & (df['Estado de item'].isin(estados_validos))].copy()
             df['Total'] = pd.to_numeric(df['Total'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
             df['Fecha de creación'] = pd.to_datetime(df['Fecha de creación'], errors='coerce')
             df['Año'] = year
-            
             all_years_data.append(df)
             print(f"✅ Año {year} procesado.")
 
-    if not all_years_data: return print("❌ Error: No hay datos para procesar.")
+    if not all_years_data: return print("❌ Error: No hay datos.")
     
     df_master = pd.concat(all_years_data, ignore_index=True)
+    fecha_max = df_master['Fecha de creación'].max()
 
-    # Cálculos Consolidados
-    stats_anual = df_master.groupby('Año').agg(
-        Venta=('Total', 'sum'),
-        Clientes=('Nro. de documento de cliente', 'nunique'),
-        Ordenes=('Nro. de orden', 'nunique')
-    )
-    stats_anual['Ticket_Prom'] = stats_anual['Venta'] / stats_anual['Ordenes']
+    # --- ANÁLISIS DE RETENCIÓN ---
+    clientes_2023 = set(df_master[df_master['Año'] == '2023']['Nro. de documento de cliente'])
+    clientes_2025 = set(df_master[df_master['Año'] == '2025']['Nro. de documento de cliente'])
+    tasa_retencion = (len(clientes_2023 & clientes_2025) / len(clientes_2023) * 100) if clientes_2023 else 0
 
+    # --- MÉTRICAS POR CLIENTE (RFM LITE) ---
     customers = df_master.groupby('Nro. de documento de cliente').agg(
         LTV_Total=('Total', 'sum'),
-        Frecuencia=('Nro. de orden', 'nunique')
-    ).sort_values('LTV_Total', ascending=False).reset_index()
+        Frecuencia=('Nro. de orden', 'nunique'),
+        Ultima_Compra=('Fecha de creación', 'max')
+    ).reset_index()
+
+    # Clasificación de Status
+    def clasificar_status(fecha):
+        dias = (fecha_max - fecha).days
+        if dias < 180: return "Activo"
+        if dias < 365: return "En Riesgo"
+        return "Dormido"
+
+    customers['Status'] = customers['Ultima_Compra'].apply(clasificar_status)
+    customers = customers.sort_values('LTV_Total', ascending=False)
 
     total_revenue = customers['LTV_Total'].sum()
     customers['Venta_Acum'] = customers['LTV_Total'].cumsum()
     pareto_perc = (customers[customers['Venta_Acum'] <= total_revenue * 0.8].shape[0] / len(customers)) * 100 if len(customers) > 0 else 0
 
-    # Gráfico de Tendencia
+    # --- GRÁFICOS ---
     sns.set_theme(style="whitegrid")
     plt.figure(figsize=(12, 5))
     df_master.set_index('Fecha de creación').resample('M')['Total'].sum().plot(color='#1A237E', lw=3)
     plt.title('Tendencia Longitudinal de Ventas Mensuales', fontsize=14)
-    plt.ylabel('Soles (S/)')
     plt.savefig(f'{OUTPUT_FOLDER}/g1_trend.png', bbox_inches='tight')
     plt.close()
 
@@ -125,22 +123,22 @@ def generar_analisis_gerencial():
     pdf = LTV_Report()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Portada
+    # P1: PORTADA
     pdf.add_page()
     pdf.ln(60)
     pdf.set_font('Helvetica', 'B', 32); pdf.set_text_color(*COLOR_PRIMARY)
     pdf.cell(0, 20, 'DASHBOARD ESTRATÉGICO LTV', 0, 1, 'C')
     pdf.set_font('Helvetica', '', 18); pdf.set_text_color(80, 80, 80)
-    pdf.cell(0, 10, 'Consolidado Trienal | Canal y Sitio Juntoz', 0, 1, 'C')
+    pdf.cell(0, 10, 'Consolidado Trienal | Customer Retention & Value Analysis', 0, 1, 'C')
     pdf.ln(20); pdf.set_draw_color(*COLOR_PRIMARY); pdf.line(40, 125, 170, 125)
 
-    # Página 1: KPIs
+    # P2: KPIs Y RETENCIÓN
     pdf.add_page()
-    pdf.chapter_title('1. Resumen Ejecutivo (3 Años)')
+    pdf.chapter_title('1. Resumen Ejecutivo y Salud de Cartera')
     pdf.set_fill_color(240, 240, 250); pdf.set_font('Helvetica', 'B', 12)
     pdf.cell(90, 20, f"VENTA TOTAL: S/ {total_revenue:,.2f}", 1, 0, 'C', True)
     pdf.cell(10)
-    pdf.cell(90, 20, f"CLIENTES DNI: {len(customers):,}", 1, 1, 'C', True)
+    pdf.cell(90, 20, f"TASA RETENCIÓN (23-25): {tasa_retencion:.1f}%", 1, 1, 'C', True)
     pdf.ln(5)
     pdf.cell(90, 20, f"LTV PROMEDIO: S/ {customers['LTV_Total'].mean():,.2f}", 1, 0, 'C', True)
     pdf.cell(10)
@@ -148,26 +146,29 @@ def generar_analisis_gerencial():
     pdf.ln(10)
     pdf.image(f'{OUTPUT_FOLDER}/g1_trend.png', x=10, w=190)
 
-    # Página 2: Desglose Anual
+    # P3: TABLA POR AÑO
     pdf.add_page()
     pdf.chapter_title('2. Performance por Año')
-    header_anual = ['Año', 'Venta Neta', 'Clientes', 'Ticket Prom.']
+    stats_anual = df_master.groupby('Año').agg(Venta=('Total', 'sum'), Clientes=('Nro. de documento de cliente', 'nunique'), Ordenes=('Nro. de orden', 'nunique'))
+    stats_anual['Ticket_Prom'] = stats_anual['Venta'] / stats_anual['Ordenes']
+    
+    header_anual = ['Año', 'Venta Neta', 'Clientes Únicos', 'Ticket Prom.']
     data_anual = [[idx, f"S/ {row['Venta']:,.2f}", f"{row['Clientes']:,}", f"S/ {row['Ticket_Prom']:,.2f}"] for idx, row in stats_anual.iterrows()]
     pdf.create_table(header_anual, data_anual, [30, 60, 50, 50])
 
-    # Página 3: Top VIP
+    # P4: TOP VIP CON STATUS
     pdf.add_page()
-    pdf.chapter_title('3. Top 10 Clientes VIP (Valor LTV)')
-    header_vip = ['DNI Cliente', 'LTV Acumulado', 'Órdenes', 'Frecuencia']
-    data_vip = [[str(row['Nro. de documento de cliente']), f"S/ {row['LTV_Total']:,.2f}", str(row['Frecuencia']), "Alta" if row['Frecuencia'] >= 3 else "Regular"] for _, row in customers.head(10).iterrows()]
-    pdf.create_table(header_vip, data_vip, [45, 55, 45, 45])
+    pdf.chapter_title('3. Top 10 Clientes VIP (Identificados por DNI)')
+    header_vip = ['DNI Cliente', 'LTV Total (S/)', 'Órdenes', 'Status Actual']
+    data_vip = [[str(row['Nro. de documento de cliente']), f"S/ {row['LTV_Total']:,.2f}", str(row['Frecuencia']), row['Status']] for _, row in customers.head(10).iterrows()]
+    pdf.create_table(header_vip, data_vip, [45, 55, 30, 60])
 
-    pdf.chapter_title('4. Insights Clave')
+    pdf.chapter_title('4. Insights y Recomendaciones')
     pdf.set_font('Helvetica', '', 11); pdf.set_text_color(*COLOR_TEXT)
-    pdf.multi_cell(0, 10, f"* Concentración de Ingresos: El 80% del valor es generado por solo el {pareto_perc:.1f}% de los clientes.\n* Nota Metodológica: Análisis basado exclusivamente en transacciones DNI con estados neteados confirmados.")
+    pdf.multi_cell(0, 10, f"* Concentración: El 80% de los ingresos depende del {pareto_perc:.1f}% de la base de clientes. Riesgo de concentración detectado.\n* Retención: Se observa un {tasa_retencion:.1f}% de supervivencia de clientes desde 2023.\n* Estrategia: Los clientes marcados como 'En Riesgo' en el Top 10 requieren una campaña de reactivación inmediata.")
 
     pdf.output(os.path.join(OUTPUT_FOLDER, FINAL_PDF_NAME))
-    print("✅ Proceso completado.")
+    print("✅ Dashboard Senior Finalizado.")
 
 if __name__ == "__main__":
     generar_analisis_gerencial()
