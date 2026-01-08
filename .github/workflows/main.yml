@@ -26,7 +26,9 @@ jobs:
       run: python scripts/procesar_ltv.py
 
     - name: Cargar Reporte Final
+      if: always() # Obliga a intentar la carga aunque haya warnings previos
       uses: actions/upload-artifact@v4
       with:
-        name: LTV_Executive_Report
-        path: reportes/LTV_Report_2023_2025.pdf
+        name: LTV_Executive_Report_Juntoz
+        # ESTA RUTA DEBE COINCIDIR CON EL SCRIPT
+        path: reportes/LTV_Executive_Report_Juntoz.pdf
