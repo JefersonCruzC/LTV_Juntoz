@@ -13,10 +13,11 @@ FINAL_PDF_NAME = 'LTV_Executive_Report_Juntoz.pdf'
 FILES = {'2023': 'Pedidos_2023.xlsx', '2024': 'Pedidos_2024.xlsx', '2025': 'Pedidos_2025.xlsx'}
 LOGO_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQfE4betnoplLem-rHmrOt2gqS7zMBYV8D3aw&s"
 
+# Ampliamos columnas para incluir 'Cantidad', 'Canal de venta' y 'Tipo de documento'
 COLS_TO_USE = [
     'Canal de venta', 'Sitio', 'Tipo de documento de cliente', 
     'Nro. de documento de cliente', 'Estado de item', 
-    'Total', 'Fecha de creación', 'Nro. de orden'
+    'Total', 'Fecha de creación', 'Nro. de orden', 'Cantidad'
 ]
 
 COLOR_PRIMARY = (26, 35, 126) 
@@ -67,108 +68,120 @@ def generar_analisis_gerencial():
     all_years_data = []
     estados_validos = ['Received', 'ReadyToShip', 'ReadyToPickUp', 'PendingToPickUp', 'InTransit', 'Confirmed']
 
-    print("--- Cargando y Filtrando Data (Estrategia Senior) ---")
+    print("--- Cargando y Segmentando Data (Multicanal) ---")
     for year, name in FILES.items():
         path = os.path.join(INPUT_FOLDER, name)
         if os.path.exists(path):
             df = pd.read_excel(path, engine='calamine', usecols=COLS_TO_USE)
-            df = df[(df['Canal de venta'] == 'Juntoz') & (df['Sitio'] == 'Juntoz') & 
-                    (df['Tipo de documento de cliente'] == 'DNI') & (df['Estado de item'].isin(estados_validos))].copy()
+            
+            # FILTROS ACTUALIZADOS: 
+            # 1. Conservamos unicamente Sitio = Juntoz
+            # 2. Abrimos Canal de Venta y Tipo de Documento
+            df = df[
+                (df['Sitio'] == 'Juntoz') & 
+                (df['Estado de item'].isin(estados_validos))
+            ].copy()
+            
             df['Total'] = pd.to_numeric(df['Total'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+            df['Cantidad'] = pd.to_numeric(df['Cantidad'], errors='coerce').fillna(0)
             df['Fecha de creación'] = pd.to_datetime(df['Fecha de creación'], errors='coerce')
             df['Año'] = year
+            
             all_years_data.append(df)
             print(f"✅ Año {year} procesado.")
 
     if not all_years_data: return print("❌ Error: No hay datos.")
     
     df_master = pd.concat(all_years_data, ignore_index=True)
-    fecha_max = df_master['Fecha de creación'].max()
 
-    # --- ANÁLISIS DE RETENCIÓN ---
-    clientes_2023 = set(df_master[df_master['Año'] == '2023']['Nro. de documento de cliente'])
-    clientes_2025 = set(df_master[df_master['Año'] == '2025']['Nro. de documento de cliente'])
-    tasa_retencion = (len(clientes_2023 & clientes_2025) / len(clientes_2023) * 100) if clientes_2023 else 0
+    # --- LÓGICA MAYORISTA VS MINORISTA ---
+    # Agrupamos por orden para determinar si es mayorista (>2 unidades totales)
+    order_type = df_master.groupby('Nro. de orden')['Cantidad'].sum().reset_index()
+    order_type['Tipo_Venta'] = order_type['Cantidad'].apply(lambda x: 'Mayorista' if x > 2 else 'Minorista')
+    
+    df_master = df_master.merge(order_type[['Nro. de orden', 'Tipo_Venta']], on='Nro. de orden', how='left')
 
-    # --- MÉTRICAS POR CLIENTE (RFM LITE) ---
-    customers = df_master.groupby('Nro. de documento de cliente').agg(
-        LTV_Total=('Total', 'sum'),
-        Frecuencia=('Nro. de orden', 'nunique'),
-        Ultima_Compra=('Fecha de creación', 'max')
-    ).reset_index()
+    # --- CÁLCULOS POR SEGMENTO ---
+    stats_tipo = df_master.groupby('Tipo_Venta').agg(
+        Venta=('Total', 'sum'),
+        Clientes=('Nro. de documento de cliente', 'nunique'),
+        Ordenes=('Nro. de orden', 'nunique')
+    )
+    stats_tipo['Ticket_Prom'] = stats_tipo['Venta'] / stats_tipo['Ordenes']
 
-    # Clasificación de Status
-    def clasificar_status(fecha):
-        dias = (fecha_max - fecha).days
-        if dias < 180: return "Activo"
-        if dias < 365: return "En Riesgo"
-        return "Dormido"
-
-    customers['Status'] = customers['Ultima_Compra'].apply(clasificar_status)
-    customers = customers.sort_values('LTV_Total', ascending=False)
-
-    total_revenue = customers['LTV_Total'].sum()
-    customers['Venta_Acum'] = customers['LTV_Total'].cumsum()
-    pareto_perc = (customers[customers['Venta_Acum'] <= total_revenue * 0.8].shape[0] / len(customers)) * 100 if len(customers) > 0 else 0
-
-    # --- GRÁFICOS ---
+    # --- GRÁFICOS NUEVOS ---
     sns.set_theme(style="whitegrid")
-    plt.figure(figsize=(12, 5))
-    df_master.set_index('Fecha de creación').resample('M')['Total'].sum().plot(color='#1A237E', lw=3)
-    plt.title('Tendencia Longitudinal de Ventas Mensuales', fontsize=14)
-    plt.savefig(f'{OUTPUT_FOLDER}/g1_trend.png', bbox_inches='tight')
+    
+    # G1: Mayorista vs Minorista (Venta)
+    plt.figure(figsize=(8, 6))
+    stats_tipo['Venta'].plot(kind='pie', autopct='%1.1f%%', colors=['#1A237E', '#FF5252'])
+    plt.title('Distribución de Ingresos: Mayorista vs Minorista', fontsize=14)
+    plt.ylabel('')
+    plt.savefig(f'{OUTPUT_FOLDER}/g_tipo_venta.png', bbox_inches='tight')
+    plt.close()
+
+    # G2: Distribución Canales
+    plt.figure(figsize=(10, 5))
+    df_master.groupby('Canal de venta')['Total'].sum().sort_values().plot(kind='barh', color='#1A237E')
+    plt.title('Ingresos por Canal de Venta', fontsize=14)
+    plt.savefig(f'{OUTPUT_FOLDER}/g_canales.png', bbox_inches='tight')
     plt.close()
 
     # --- PDF GENERATION ---
     pdf = LTV_Report()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # P1: PORTADA
+    # Portada
     pdf.add_page()
     pdf.ln(60)
-    pdf.set_font('Helvetica', 'B', 32); pdf.set_text_color(*COLOR_PRIMARY)
-    pdf.cell(0, 20, 'DASHBOARD ESTRATÉGICO LTV', 0, 1, 'C')
+    pdf.set_font('Helvetica', 'B', 30); pdf.set_text_color(*COLOR_PRIMARY)
+    pdf.cell(0, 20, 'REPORTE ESTRATÉGICO MULTICANAL', 0, 1, 'C')
     pdf.set_font('Helvetica', '', 18); pdf.set_text_color(80, 80, 80)
-    pdf.cell(0, 10, 'Consolidado Trienal | Customer Retention & Value Analysis', 0, 1, 'C')
+    pdf.cell(0, 10, 'Segmentación Mayorista/Minorista & Origen de Clientes', 0, 1, 'C')
     pdf.ln(20); pdf.set_draw_color(*COLOR_PRIMARY); pdf.line(40, 125, 170, 125)
 
-    # P2: KPIs Y RETENCIÓN
+    # Página 1: Segmentación de Venta
     pdf.add_page()
-    pdf.chapter_title('1. Resumen Ejecutivo y Salud de Cartera')
-    pdf.set_fill_color(240, 240, 250); pdf.set_font('Helvetica', 'B', 12)
-    pdf.cell(90, 20, f"VENTA TOTAL: S/ {total_revenue:,.2f}", 1, 0, 'C', True)
-    pdf.cell(10)
-    pdf.cell(90, 20, f"TASA RETENCIÓN (23-25): {tasa_retencion:.1f}%", 1, 1, 'C', True)
-    pdf.ln(5)
-    pdf.cell(90, 20, f"LTV PROMEDIO: S/ {customers['LTV_Total'].mean():,.2f}", 1, 0, 'C', True)
-    pdf.cell(10)
-    pdf.cell(90, 20, f"TICKET PROM. GLOBAL: S/ {df_master['Total'].mean():,.2f}", 1, 1, 'C', True)
-    pdf.ln(10)
-    pdf.image(f'{OUTPUT_FOLDER}/g1_trend.png', x=10, w=190)
-
-    # P3: TABLA POR AÑO
-    pdf.add_page()
-    pdf.chapter_title('2. Performance por Año')
-    stats_anual = df_master.groupby('Año').agg(Venta=('Total', 'sum'), Clientes=('Nro. de documento de cliente', 'nunique'), Ordenes=('Nro. de orden', 'nunique'))
-    stats_anual['Ticket_Prom'] = stats_anual['Venta'] / stats_anual['Ordenes']
+    pdf.chapter_title('1. Análisis de Segmentos: Mayorista vs Minorista')
+    pdf.image(f'{OUTPUT_FOLDER}/g_tipo_venta.png', x=50, w=110)
     
-    header_anual = ['Año', 'Venta Neta', 'Clientes Únicos', 'Ticket Prom.']
-    data_anual = [[idx, f"S/ {row['Venta']:,.2f}", f"{row['Clientes']:,}", f"S/ {row['Ticket_Prom']:,.2f}"] for idx, row in stats_anual.iterrows()]
-    pdf.create_table(header_anual, data_anual, [30, 60, 50, 50])
+    header_tipo = ['Segmento', 'Venta Total', 'Clientes', 'Ticket Prom.']
+    data_tipo = [[idx, f"S/ {row['Venta']:,.2f}", f"{row['Clientes']:,}", f"S/ {row['Ticket_Prom']:,.2f}"] for idx, row in stats_tipo.iterrows()]
+    pdf.create_table(header_tipo, data_tipo, [45, 50, 45, 50])
 
-    # P4: TOP VIP CON STATUS
+    # Página 2: Canales y Documentos
     pdf.add_page()
-    pdf.chapter_title('3. Top 10 Clientes VIP (Identificados por DNI)')
-    header_vip = ['DNI Cliente', 'LTV Total (S/)', 'Órdenes', 'Status Actual']
-    data_vip = [[str(row['Nro. de documento de cliente']), f"S/ {row['LTV_Total']:,.2f}", str(row['Frecuencia']), row['Status']] for _, row in customers.head(10).iterrows()]
-    pdf.create_table(header_vip, data_vip, [45, 55, 30, 60])
+    pdf.chapter_title('2. Análisis de Canales y Prioridad')
+    pdf.image(f'{OUTPUT_FOLDER}/g_canales.png', x=10, w=190)
+    
+    pdf.ln(5)
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(0, 10, 'Top 5 Tipos de Documento por Venta:', 0, 1)
+    doc_stats = df_master.groupby('Tipo de documento de cliente')['Total'].sum().sort_values(ascending=False).head(5)
+    for doc, val in doc_stats.items():
+        pdf.set_font('Helvetica', '', 10)
+        pdf.cell(0, 8, f"- {doc}: S/ {val:,.2f}", 0, 1)
 
-    pdf.chapter_title('4. Insights y Recomendaciones')
+    # Página 3: Insights
+    pdf.add_page()
+    pdf.chapter_title('3. Conclusiones Ejecutivas')
     pdf.set_font('Helvetica', '', 11); pdf.set_text_color(*COLOR_TEXT)
-    pdf.multi_cell(0, 10, f"* Concentración: El 80% de los ingresos depende del {pareto_perc:.1f}% de la base de clientes. Riesgo de concentración detectado.\n* Retención: Se observa un {tasa_retencion:.1f}% de supervivencia de clientes desde 2023.\n* Estrategia: Los clientes marcados como 'En Riesgo' en el Top 10 requieren una campaña de reactivación inmediata.")
+    
+    venta_may = stats_tipo.loc['Mayorista', 'Venta'] if 'Mayorista' in stats_tipo.index else 0
+    perc_may = (venta_may / df_master['Total'].sum()) * 100
+    
+    insights = [
+        f"Impacto Mayorista: Las ventas de volumen (>2 unidades) representan el {perc_may:.1f}% del ingreso total.",
+        "Priorización de Documentos: El análisis muestra qué documentos deben ser prioritarios para campañas de facturación dirigida.",
+        "Diversificación de Canales: El reporte ahora identifica la fuerza relativa de cada canal de venta bajo el sitio Juntoz.",
+        "Eficiencia de Segmento: El Ticket Promedio Mayorista permite entender el margen por volumen frente al retail tradicional."
+    ]
+    for ins in insights:
+        pdf.multi_cell(0, 10, f"• {ins}")
+        pdf.ln(2)
 
     pdf.output(os.path.join(OUTPUT_FOLDER, FINAL_PDF_NAME))
-    print("✅ Dashboard Senior Finalizado.")
+    print("✅ Reporte Multicanal Finalizado.")
 
 if __name__ == "__main__":
     generar_analisis_gerencial()
